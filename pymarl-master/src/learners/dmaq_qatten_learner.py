@@ -154,8 +154,8 @@ class DMAQ_qattenLearner:
             self.logger.log_stat("td_error_abs2", (TD2.abs().sum().item() / mask_elems), t_env)
             self.logger.log_stat("q_taken_mean",
                                  (chosen_action_qvals * mask).sum().item() / (mask_elems * self.args.n_agents), t_env)
-            self.logger.log_stat("target_mean", (targets * mask).sum().item() / (mask_elems * self.args.n_agents),
-                                 t_env)
+            #self.logger.log_stat("target_mean", (targets * mask).sum().item() / (mask_elems * self.args.n_agents),
+            #                     t_env)
             self.log_stats_t = t_env
 
     def _ensamble_mix(self,mixer_i,target_mixer_i,batch,chosen_action_qvals,max_action_qvals,actions_onehot,
