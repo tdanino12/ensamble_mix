@@ -22,13 +22,16 @@ class DMAQ_qattenLearner:
         if args.mixer is not None:
             if args.mixer == "dmaq":
                 self.mixer = DMAQer(args)
+                self.mixer2 = DMAQer(args)
             elif args.mixer == 'dmaq_qatten':
                 self.mixer = DMAQ_QattenMixer(args)
             else:
                 raise ValueError("Mixer {} not recognised.".format(args.mixer))
             self.params += list(self.mixer.parameters())
+            self.params += list(self.mixer2.parameters())
             self.target_mixer = copy.deepcopy(self.mixer)
-
+            self.target_mixer2 = copy.deepcopy(self.mixer2)
+            
         self.optimiser = RMSprop(params=self.params, lr=args.lr, alpha=args.optim_alpha, eps=args.optim_eps)
         #self.optimiser = RMSprop([{'params':self.params},{'params':list(self.mixer.attention_weight.parameters()), 'weight_decay':0.001},
         #                          {'params':list(self.mixer.si_weight.parameters()), 'weight_decay':0.001},{'params':list(self.mixer.cov.parameters()), 'weight_decay':0.00}], lr=args.lr, alpha=args.optim_alpha, eps=args.optim_eps)
@@ -118,76 +121,22 @@ class DMAQ_qattenLearner:
             target_mac_out = th.stack(target_mac_out[1:], dim=1)  # Concat across time
             target_max_qvals = target_mac_out.max(dim=3)[0]
 
-        # Mix
-        if mixer is not None:
-            if self.args.mixer == "dmaq_qatten":
-                ans_chosen, q_attend_regs, head_entropies,_ = \
-                    mixer(chosen_action_qvals, batch["state"][:, :-1], is_v=True)
-                ans_adv, _, _, decay = mixer(chosen_action_qvals, batch["state"][:, :-1], actions=actions_onehot,
-                                      max_q_i=max_action_qvals, is_v=False)
-                chosen_action_qvals = ans_chosen + ans_adv
-            else:
-                ans_chosen = mixer(chosen_action_qvals, batch["state"][:, :-1], is_v=True)
-                ans_adv = mixer(chosen_action_qvals, batch["state"][:, :-1], actions=actions_onehot,
-                                max_q_i=max_action_qvals, is_v=False)
-                chosen_action_qvals = ans_chosen + ans_adv
+        TD1, q_attend_regs1 = self._ensamble_mix(self.mixer,self.target_mixer,batch,chosen_action_qvals,max_action_qvals,actions_onehot,
+                     target_chosen_qvals,cur_max_actions_onehot,target_max_qvals)                          
 
-            if self.args.double_q:
-                if self.args.mixer == "dmaq_qatten":
-                    target_chosen, _, _,_ = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:], is_v=True)
-                    target_adv, _, _, decay = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:],
-                                                         actions=cur_max_actions_onehot,
-                                                         max_q_i=target_max_qvals, is_v=False)
-                    target_max_qvals = target_chosen + target_adv
-                else:
-                    target_chosen = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:], is_v=True)
-                    target_adv = self.target_mixer(target_chosen_qvals, batch["state"][:, 1:],
-                                                   actions=cur_max_actions_onehot,
-                                                   max_q_i=target_max_qvals, is_v=False)
-                    target_max_qvals = target_chosen + target_adv
-            else:
-                target_max_qvals = self.target_mixer(target_max_qvals, batch["state"][:, 1:], is_v=True)
-
-        # Calculate 1-step Q-Learning targets
-        targets = rewards + self.args.gamma * (1 - terminated) * target_max_qvals
-
-        if show_demo:
-            tot_q_data = chosen_action_qvals.detach().cpu().numpy()
-            tot_target = targets.detach().cpu().numpy()
-            print('action_pair_%d_%d' % (save_data[0], save_data[1]), np.squeeze(q_data[:, 0]),
-                  np.squeeze(q_i_data[:, 0]), np.squeeze(tot_q_data[:, 0]), np.squeeze(tot_target[:, 0]))
-            self.logger.log_stat('action_pair_%d_%d' % (save_data[0], save_data[1]),
-                                 np.squeeze(tot_q_data[:, 0]), t_env)
-            return
-
-        # Td-error
-        td_error = (chosen_action_qvals - targets.detach())
-
-        mask = mask.expand_as(td_error)
-
-        # 0-out the targets that came from padded data
-        masked_td_error = td_error * mask
+        TD2, q_attend_regs2  = self._ensamble_mix(self.mixer2,self.target_mixer2,batch,chosen_action_qvals,max_action_qvals,actions_onehot,
+                     target_chosen_qvals,cur_max_actions_onehot,target_max_qvals) 
 
         # Normal L2 loss, take mean over actual data
         if self.args.mixer == "dmaq_qatten":
-            loss = (masked_td_error ** 2).sum() / mask.sum() + q_attend_regs
+            loss = (TD1 ** 2).sum() / mask.sum() + q_attend_regs1
+            loss += (TD2 ** 2).sum() / mask.sum() + q_attend_regs2
         else:
             loss = (masked_td_error ** 2).sum() / mask.sum()
 
         masked_hit_prob = th.mean(is_max_action, dim=2) * mask
         hit_prob = masked_hit_prob.sum() / mask.sum()
 
-        #ss = th.mean(decay)
-        #ss_i = ss.item()
-
-
-        # Set the new weight decay value
-        #if self.optimiser.param_groups[1]['weight_decay']>0:
-        #    self.optimiser.param_groups[1]['weight_decay'] = ss_i/100
-        #        # Set the new weight decay value
-        #if self.optimiser.param_groups[2]['weight_decay']>0:
-        #    self.optimiser.param_groups[2]['weight_decay'] = ss_i/100
-        #    print(ss_i)
                       
         # Optimise
         optimiser.zero_grad()
@@ -206,6 +155,50 @@ class DMAQ_qattenLearner:
             self.logger.log_stat("target_mean", (targets * mask).sum().item() / (mask_elems * self.args.n_agents),
                                  t_env)
             self.log_stats_t = t_env
+
+    def _ensamble_mix(self,mixer_i,target_mixer_i,batch,chosen_action_qvals,max_action_qvals,actions_onehot,
+                     target_chosen_qvals,cur_max_actions_onehot,target_max_qvals):
+
+        if mixer is not None:
+            if self.args.mixer == "dmaq_qatten":
+                ans_chosen, q_attend_regs, head_entropies,_ = \
+                    mixer_i(chosen_action_qvals, batch["state"][:, :-1], is_v=True)
+                ans_adv, _, _, decay = mixer_i(chosen_action_qvals, batch["state"][:, :-1], actions=actions_onehot,
+                                      max_q_i=max_action_qvals, is_v=False)
+                chosen_action_qvals = ans_chosen + ans_adv
+            else:
+                ans_chosen = mixer_i(chosen_action_qvals, batch["state"][:, :-1], is_v=True)
+                ans_adv = mixer_i(chosen_action_qvals, batch["state"][:, :-1], actions=actions_onehot,
+                                max_q_i=max_action_qvals, is_v=False)
+                chosen_action_qvals = ans_chosen + ans_adv
+
+            if self.args.double_q:
+                if self.args.mixer == "dmaq_qatten":
+                    target_chosen, _, _,_ = target_mixer_i(target_chosen_qvals, batch["state"][:, 1:], is_v=True)
+                    target_adv, _, _, decay = target_mixer_i(target_chosen_qvals, batch["state"][:, 1:],
+                                                         actions=cur_max_actions_onehot,
+                                                         max_q_i=target_max_qvals, is_v=False)
+                    target_max_qvals = target_chosen + target_adv
+                else:
+                    target_chosen = target_mixer_i(target_chosen_qvals, batch["state"][:, 1:], is_v=True)
+                    target_adv = target_mixer_i(target_chosen_qvals, batch["state"][:, 1:],
+                                                   actions=cur_max_actions_onehot,
+                                                   max_q_i=target_max_qvals, is_v=False)
+                    target_max_qvals = target_chosen + target_adv
+            else:
+                target_max_qvals = target_mixer_i(target_max_qvals, batch["state"][:, 1:], is_v=True)
+
+        # Calculate 1-step Q-Learning targets
+        targets = rewards + self.args.gamma * (1 - terminated) * target_max_qvals
+
+        # Td-error
+        td_error = (chosen_action_qvals - targets.detach())
+        mask = mask.expand_as(td_error)
+
+        # 0-out the targets that came from padded data
+        masked_td_error = td_error * mask
+                         
+        return masked_td_error, q_attend_regs    
 
     def train(self, batch: EpisodeBatch, t_env: int, episode_num: int, show_demo=False, save_data=None):
         self.sub_train(batch, t_env, episode_num, self.mac, self.mixer, self.optimiser, self.params,
