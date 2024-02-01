@@ -123,10 +123,10 @@ class DMAQ_qattenLearner:
             target_max_qvals = target_mac_out.max(dim=3)[0]
 
         TD1, q_attend_regs1 = self._ensamble_mix(self.mixer,self.target_mixer,batch,chosen_action_qvals,max_action_qvals,actions_onehot,
-                     target_chosen_qvals,cur_max_actions_onehot,target_max_qvals,rewards,terminated)                          
+                     target_chosen_qvals,cur_max_actions_onehot,target_max_qvals,rewards,terminated,mask)                          
 
         TD2, q_attend_regs2  = self._ensamble_mix(self.mixer2,self.target_mixer2,batch,chosen_action_qvals,max_action_qvals,actions_onehot,
-                     target_chosen_qvals,cur_max_actions_onehot,target_max_qvals,rewards,terminated) 
+                     target_chosen_qvals,cur_max_actions_onehot,target_max_qvals,rewards,terminated,mask) 
 
         # Normal L2 loss, take mean over actual data
         if self.args.mixer == "dmaq_qatten":
@@ -158,7 +158,7 @@ class DMAQ_qattenLearner:
             self.log_stats_t = t_env
 
     def _ensamble_mix(self,mixer_i,target_mixer_i,batch,chosen_action_qvals,max_action_qvals,actions_onehot,
-                     target_chosen_qvals,cur_max_actions_onehot,target_max_qvals,rewards,terminated):
+                     target_chosen_qvals,cur_max_actions_onehot,target_max_qvals,rewards,terminated,mask):
 
         if mixer_i is not None:
             if self.args.mixer == "dmaq_qatten":
