@@ -160,7 +160,7 @@ class DMAQ_qattenLearner:
     def _ensamble_mix(self,mixer_i,target_mixer_i,batch,chosen_action_qvals,max_action_qvals,actions_onehot,
                      target_chosen_qvals,cur_max_actions_onehot,target_max_qvals):
 
-        if mixer is not None:
+        if mixer_i is not None:
             if self.args.mixer == "dmaq_qatten":
                 ans_chosen, q_attend_regs, head_entropies,_ = \
                     mixer_i(chosen_action_qvals, batch["state"][:, :-1], is_v=True)
