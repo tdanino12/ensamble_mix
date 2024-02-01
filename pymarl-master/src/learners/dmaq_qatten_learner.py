@@ -25,6 +25,7 @@ class DMAQ_qattenLearner:
                 self.mixer2 = DMAQer(args)
             elif args.mixer == 'dmaq_qatten':
                 self.mixer = DMAQ_QattenMixer(args)
+                self.mixer2 = DMAQ_QattenMixer(args)
             else:
                 raise ValueError("Mixer {} not recognised.".format(args.mixer))
             self.params += list(self.mixer.parameters())
